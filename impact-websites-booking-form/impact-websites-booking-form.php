@@ -139,7 +139,7 @@ add_action( 'wp_enqueue_scripts', function () {
 .impact-booking-selected-item:last-child{border-bottom:none}
 .impact-booking-selected-item .left{display:flex;gap:12px;align-items:center}
 .impact-booking-selected-item img{width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--impact-border)}
-.impact-booking-selected-item .title{font-aweight:600}
+.impact-booking-selected-item .title{font-weight:600}
 .impact-remove-booking-item{background:transparent;border:none;color:#c0392b;cursor:pointer;font-size:13px;padding:6px}
 
 /* Form grid */
@@ -782,7 +782,7 @@ function impact_websites_booking_form_shortcode( $atts = array() ) {
  * @return string
  */
 function impact_websites_render_booking_form_html( $submit_text = 'Send Booking Request' ) {
-	$safety_url = 'https://impactwebsitesdevelopment.co.nz/project723ksl/wp-content/uploads/2025/10/TAH-Safety-Sheet.pdf';
+	$safety_url = get_option( 'impact_booking_safety_sheet_url', 'https://impactwebsitesdevelopment.co.nz/project723ksl/wp-content/uploads/2025/10/TAH-Safety-Sheet.pdf' );
 	ob_start();
 	?>
 	<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="impact-booking-form" novalidate>
@@ -945,7 +945,14 @@ function impact_websites_handle_booking_form() {
 	}
 
 	// Email notification.
-	$admin_email = apply_filters( 'impact_booking_email_recipient', get_option( 'admin_email' ) );
+	$saved_emails = get_option( 'impact_booking_recipient_emails', '' );
+	if ( ! empty( $saved_emails ) ) {
+		// Stored as a newline-separated list; flatten to a comma-separated string for wp_mail.
+		$recipients = implode( ',', array_filter( array_map( 'trim', explode( "\n", $saved_emails ) ) ) );
+	} else {
+		$recipients = get_option( 'admin_email' );
+	}
+	$admin_email = apply_filters( 'impact_booking_email_recipient', $recipients );
 	$subject     = sprintf( 'New booking request: %s', $post_title );
 	$body_lines  = array(
 		'Products: ' . ( ! empty( $product_names ) ? implode( ', ', $product_names ) : ( ! empty( $product_ids ) ? implode( ', ', $product_ids ) : '—' ) ),
@@ -1015,4 +1022,177 @@ if ( ! function_exists( 'impact_get_book_now_url' ) ) {
 	function impact_get_book_now_url( $product_id = 0, $page_url = '' ) {
 		return impact_websites_get_book_now_url( $product_id, $page_url );
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Admin menu & settings page
+// ---------------------------------------------------------------------------
+
+/**
+ * Register the top-level admin menu and the Settings sub-page.
+ */
+add_action( 'admin_menu', function () {
+	// Top-level menu — points directly to the settings page.
+	add_menu_page(
+		__( 'Booking Form', 'impact-websites-booking-form' ),
+		__( 'Booking Form', 'impact-websites-booking-form' ),
+		'manage_options',
+		'impact-booking-settings',
+		'impact_websites_render_settings_page',
+		'dashicons-clipboard',
+		26
+	);
+
+	// Rename the auto-created sub-menu so it reads "Settings" rather than repeating the top-level title.
+	add_submenu_page(
+		'impact-booking-settings',
+		__( 'Booking Form Settings', 'impact-websites-booking-form' ),
+		__( 'Settings', 'impact-websites-booking-form' ),
+		'manage_options',
+		'impact-booking-settings',
+		'impact_websites_render_settings_page'
+	);
+
+	// Quick link to the Booking Requests CPT list.
+	add_submenu_page(
+		'impact-booking-settings',
+		__( 'Booking Requests', 'impact-websites-booking-form' ),
+		__( 'Booking Requests', 'impact-websites-booking-form' ),
+		'manage_options',
+		'edit.php?post_type=impact_booking'
+	);
+} );
+
+/**
+ * Register the plugin settings.
+ */
+add_action( 'admin_init', function () {
+	register_setting(
+		'impact_booking_settings_group',
+		'impact_booking_recipient_emails',
+		array(
+			'type'              => 'string',
+			'sanitize_callback' => 'impact_websites_sanitize_recipient_emails',
+			'default'           => '',
+		)
+	);
+
+	register_setting(
+		'impact_booking_settings_group',
+		'impact_booking_safety_sheet_url',
+		array(
+			'type'              => 'string',
+			'sanitize_callback' => 'esc_url_raw',
+			'default'           => '',
+		)
+	);
+
+	add_settings_section(
+		'impact_booking_main_section',
+		__( 'Email Notifications', 'impact-websites-booking-form' ),
+		'__return_false',
+		'impact-booking-settings'
+	);
+
+	add_settings_field(
+		'impact_booking_recipient_emails',
+		__( 'Recipient email addresses', 'impact-websites-booking-form' ),
+		'impact_websites_render_recipient_emails_field',
+		'impact-booking-settings',
+		'impact_booking_main_section'
+	);
+
+	add_settings_section(
+		'impact_booking_form_section',
+		__( 'Booking Form', 'impact-websites-booking-form' ),
+		'__return_false',
+		'impact-booking-settings'
+	);
+
+	add_settings_field(
+		'impact_booking_safety_sheet_url',
+		__( 'Safety sheet URL', 'impact-websites-booking-form' ),
+		'impact_websites_render_safety_sheet_url_field',
+		'impact-booking-settings',
+		'impact_booking_form_section'
+	);
+} );
+
+/**
+ * Sanitize the recipient emails option: one valid email per line.
+ *
+ * @param string $raw Raw textarea value.
+ * @return string
+ */
+function impact_websites_sanitize_recipient_emails( $raw ) {
+	$lines  = explode( "\n", (string) $raw );
+	$clean  = array();
+	foreach ( $lines as $line ) {
+		$line = sanitize_email( trim( $line ) );
+		if ( is_email( $line ) ) {
+			$clean[] = $line;
+		}
+	}
+	return implode( "\n", $clean );
+}
+
+/**
+ * Render the recipient emails textarea field.
+ */
+function impact_websites_render_recipient_emails_field() {
+	$value = get_option( 'impact_booking_recipient_emails', '' );
+	?>
+	<textarea
+		id="impact_booking_recipient_emails"
+		name="impact_booking_recipient_emails"
+		rows="5"
+		cols="50"
+		class="large-text"
+		placeholder="<?php esc_attr_e( 'One email address per line', 'impact-websites-booking-form' ); ?>"
+	><?php echo esc_textarea( $value ); ?></textarea>
+	<p class="description">
+		<?php esc_html_e( 'Enter one email address per line. Every address listed here will receive a copy of each new booking request. Leave blank to fall back to the site admin email.', 'impact-websites-booking-form' ); ?>
+	</p>
+	<?php
+}
+
+/**
+ * Render the safety sheet URL field.
+ */
+function impact_websites_render_safety_sheet_url_field() {
+	$value = get_option( 'impact_booking_safety_sheet_url', '' );
+	?>
+	<input
+		id="impact_booking_safety_sheet_url"
+		name="impact_booking_safety_sheet_url"
+		type="url"
+		value="<?php echo esc_attr( $value ); ?>"
+		class="regular-text"
+		placeholder="https://example.com/safety-sheet.pdf"
+	>
+	<p class="description">
+		<?php esc_html_e( 'URL to the safety sheet PDF shown on the booking form. Leave blank to use the built-in default.', 'impact-websites-booking-form' ); ?>
+	</p>
+	<?php
+}
+
+/**
+ * Render the settings page.
+ */
+function impact_websites_render_settings_page() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+	?>
+	<div class="wrap">
+		<h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
+		<form method="post" action="options.php">
+			<?php
+			settings_fields( 'impact_booking_settings_group' );
+			do_settings_sections( 'impact-booking-settings' );
+			submit_button( __( 'Save Settings', 'impact-websites-booking-form' ) );
+			?>
+		</form>
+	</div>
+	<?php
 }
