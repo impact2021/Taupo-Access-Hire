@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Impact Websites Booking Form
  * Plugin URI:        https://impactwebsites.co.nz/
- * Description:       Combined WooCommerce product-category layout and booking form with multi-product booking list (localStorage), safety confirmation, product designation, spec-sheet download, and optional auto-scrolling multi-image display. Shortcodes: [impact_product_category_layout] and [impact-websites-booking-form].
+ * Description:       Combined WooCommerce product-category layout and booking form with multi-product booking list (localStorage), safety confirmation, product designation, spec-sheet download, and optional auto-scrolling multi-image display. Shortcodes: [impact_product_category_layout], [impact_product_card] and [impact-websites-booking-form].
  * Version:           1.0.0
  * Requires at least: 5.9
  * Requires PHP:      7.4
@@ -67,12 +67,18 @@ add_action( 'wp_enqueue_scripts', function () {
 		$should_load = true;
 	}
 
-	// Also check if current post content has either shortcode.
+	// Load on single product pages (Divi Theme Builder templates won't pass has_shortcode).
+	if ( ! $should_load && function_exists( 'is_product' ) && is_product() ) {
+		$should_load = true;
+	}
+
+	// Also check if current post content has any of the plugin shortcodes.
 	if ( ! $should_load && is_singular() ) {
 		$post = get_post();
 		if ( $post && (
 			has_shortcode( $post->post_content, 'impact_product_category_layout' ) ||
-			has_shortcode( $post->post_content, 'impact-websites-booking-form' )
+			has_shortcode( $post->post_content, 'impact-websites-booking-form' ) ||
+			has_shortcode( $post->post_content, 'impact_product_card' )
 		) ) {
 			$should_load = true;
 		}
@@ -164,6 +170,21 @@ add_action( 'wp_enqueue_scripts', function () {
   .impact-websites-product-image{flex:0 0 auto;max-width:100%}
   .impact-websites-product-content{width:100%}
   .impact-websites-title-row{gap:6px}
+}
+
+/* Single product card (Divi theme builder) */
+.impact-product-card{display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap}
+.impact-product-card-image{flex:0 0 340px;max-width:340px}
+.impact-product-card-image img{width:100%;height:auto;border-radius:8px;display:block}
+.impact-product-card-body{flex:1;min-width:200px;display:flex;flex-direction:column}
+.impact-product-card-title{font-size:1.6rem;margin:0 0 4px;line-height:1.2}
+.impact-product-card-designation{color:var(--impact-muted);font-weight:700;font-size:0.85rem;text-transform:uppercase;margin:0 0 0.8rem}
+.impact-product-card-description{line-height:1.6;margin:0 0 1rem}
+.impact-product-card-price{font-weight:700;font-size:1.2rem;margin-bottom:1rem}
+.impact-product-card-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:auto}
+@media (max-width:900px){
+  .impact-product-card{flex-direction:column}
+  .impact-product-card-image{flex:0 0 auto;max-width:100%}
 }
 ";
 
@@ -657,6 +678,184 @@ add_shortcode( 'impact_product_category_layout', function ( $atts ) {
 	}
 
 	wp_reset_postdata();
+
+	return ob_get_clean();
+} );
+
+/**
+ * Shortcode: [impact_product_card]
+ *
+ * Renders a single WooCommerce product card with image, description and
+ * booking button. Designed for use in a Divi Theme Builder single-product
+ * template to replace the default WordPress/WooCommerce product layout.
+ *
+ * Attributes:
+ *   id            – product post ID (default: current post)
+ *   slug          – product slug as an alternative to id
+ *   book_now_page – override URL for the booking page
+ *   show_price    – yes|no  (default: yes)
+ *
+ * @param array $atts Shortcode attributes.
+ * @return string
+ */
+add_shortcode( 'impact_product_card', function ( $atts ) {
+	if ( ! function_exists( 'wc_get_product' ) ) {
+		return '<p>WooCommerce is not active.</p>';
+	}
+
+	$atts = shortcode_atts(
+		array(
+			'id'            => 0,
+			'slug'          => '',
+			'book_now_page' => '',
+			'show_price'    => 'yes',
+		),
+		$atts,
+		'impact_product_card'
+	);
+
+	// Resolve product ID.
+	$post_id = 0;
+	if ( ! empty( $atts['id'] ) ) {
+		$post_id = absint( $atts['id'] );
+	} elseif ( ! empty( $atts['slug'] ) ) {
+		$p = get_page_by_path( sanitize_title( $atts['slug'] ), OBJECT, 'product' );
+		if ( $p ) {
+			$post_id = $p->ID;
+		}
+	}
+
+	// Fall back to the current post (works on Divi single-product templates).
+	if ( ! $post_id ) {
+		$post_id = get_the_ID();
+	}
+
+	if ( ! $post_id || get_post_type( $post_id ) !== 'product' ) {
+		return '<p>No product found.</p>';
+	}
+
+	$product_obj = wc_get_product( $post_id );
+	if ( ! $product_obj ) {
+		return '<p>No product found.</p>';
+	}
+
+	// Resolve booking page URL.
+	$book_now_url = '';
+	if ( ! empty( $atts['book_now_page'] ) ) {
+		$book_now_url = esc_url( $atts['book_now_page'] );
+	} else {
+		$found = get_posts(
+			array(
+				'post_type'   => 'page',
+				's'           => '[impact-websites-booking-form',
+				'post_status' => 'publish',
+				'numberposts' => 1,
+			)
+		);
+		if ( ! empty( $found ) ) {
+			$book_now_url = get_permalink( $found[0] );
+		}
+	}
+	$book_target = $book_now_url ? $book_now_url : home_url( '/book-now/' );
+
+	ob_start();
+
+	// Expose book-now URL to the mini-bar JS.
+	if ( $book_now_url ) {
+		echo '<meta name="impact-booking-page-url" content="' . esc_url( $book_now_url ) . '">';
+	}
+
+	echo '<div class="impact-product-card" data-product-id="' . esc_attr( $post_id ) . '">';
+
+	// Image column (multiscroll-aware).
+	echo '<div class="impact-product-card-image">';
+	impact_websites_render_product_image_with_multiscroll( $post_id, $book_target );
+	echo '</div>';
+
+	// Body column.
+	echo '<div class="impact-product-card-body">';
+
+	// Title.
+	echo '<h1 class="impact-product-card-title">' . esc_html( get_the_title( $post_id ) ) . '</h1>';
+
+	// Designation (ACF first, then post meta).
+	$designation = '';
+	if ( function_exists( 'get_field' ) ) {
+		$field = get_field( 'designation', $post_id );
+		if ( is_string( $field ) || is_numeric( $field ) ) {
+			$designation = (string) $field;
+		} elseif ( is_array( $field ) ) {
+			$designation = ! empty( $field['value'] ) ? $field['value'] : ( ! empty( $field['label'] ) ? $field['label'] : '' );
+		}
+	}
+	if ( empty( $designation ) ) {
+		$designation = (string) get_post_meta( $post_id, 'designation', true );
+	}
+	if ( ! empty( $designation ) ) {
+		echo '<div class="impact-product-card-designation">' . esc_html( $designation ) . '</div>';
+	}
+
+	// Description: short, then full.
+	$short_desc = $product_obj->get_short_description();
+	if ( ! empty( $short_desc ) ) {
+		echo '<div class="impact-product-card-description">' . wp_kses_post( wpautop( $short_desc ) ) . '</div>';
+	} else {
+		$full_desc = $product_obj->get_description();
+		if ( ! empty( $full_desc ) ) {
+			echo '<div class="impact-product-card-description">' . wp_kses_post( wpautop( $full_desc ) ) . '</div>';
+		}
+	}
+
+	// Price (optional).
+	if ( 'no' !== $atts['show_price'] ) {
+		$price_html = $product_obj->get_price_html();
+		if ( $price_html ) {
+			echo '<div class="impact-product-card-price">' . wp_kses_post( $price_html ) . '</div>';
+		}
+	}
+
+	// Actions.
+	echo '<div class="impact-product-card-actions">';
+
+	// "Add to booking" button.
+	printf(
+		'<button type="button" class="impact-add-to-booking-btn" data-product-id="%s" data-product-name="%s" data-product-thumb="%s">Add to booking</button>',
+		esc_attr( $post_id ),
+		esc_attr( get_the_title( $post_id ) ),
+		esc_attr( get_the_post_thumbnail_url( $post_id, 'thumbnail' ) )
+	);
+
+	// Spec-sheet download (ACF first, then post meta).
+	$spec_url = '';
+	if ( function_exists( 'get_field' ) ) {
+		$spec_field = get_field( 'download_the_spec_sheet', $post_id );
+		if ( $spec_field ) {
+			if ( is_array( $spec_field ) && ! empty( $spec_field['url'] ) ) {
+				$spec_url = $spec_field['url'];
+			} elseif ( is_numeric( $spec_field ) ) {
+				$spec_url = wp_get_attachment_url( intval( $spec_field ) );
+			} elseif ( is_string( $spec_field ) ) {
+				$spec_url = $spec_field;
+			}
+		}
+	}
+	if ( empty( $spec_url ) ) {
+		$meta_val = get_post_meta( $post_id, 'download_the_spec_sheet', true );
+		if ( $meta_val ) {
+			$spec_url = is_numeric( $meta_val ) ? wp_get_attachment_url( intval( $meta_val ) ) : $meta_val;
+		}
+	}
+	if ( ! empty( $spec_url ) ) {
+		printf(
+			'<a class="impact-spec-btn" href="%s" target="_blank" rel="noopener noreferrer" aria-label="Download the spec sheet for %s">Download the spec sheet</a>',
+			esc_url( $spec_url ),
+			esc_attr( get_the_title( $post_id ) )
+		);
+	}
+
+	echo '</div>'; // actions
+	echo '</div>'; // body
+	echo '</div>'; // card
 
 	return ob_get_clean();
 } );
